@@ -16,7 +16,24 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Run TruffleHog Secrets Scan
+            - name: Determine scan mode
+        id: scan-mode
+        run: |
+          if [ "${{ github.event.before }}" = "0000000000000000000000000000000000000000" ]; then
+            echo "full_scan=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "full_scan=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run TruffleHog Secrets Scan (full repo)
+        if: steps.scan-mode.outputs.full_scan == 'true' || github.event_name == 'push' && github.event.before == null
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          extra_args: --debug
+
+      - name: Run TruffleHog Secrets Scan (diff)
+        if: steps.scan-mode.outputs.full_scan == 'false'
         uses: trufflesecurity/trufflehog@main
         with:
           path: ./
