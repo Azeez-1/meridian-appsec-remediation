@@ -23,11 +23,16 @@ app = FastAPI(
     version="2.1.4"
 )
 
+ALLOWED_ORIGINS = os.environ.get(
+    "ALLOWED_ORIGINS",
+    "http://localhost:3000,http://localhost:8000"
+).split(",")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=ALLOWED_ORIGINS,
+    allow_methods=["GET", "POST", "PATCH"],
+    allow_headers=["x-api-key", "Content-Type"],
 )
 
 DEBUG_PASSWORD = os.environ.get("DEBUG_PASSWORD", "")
