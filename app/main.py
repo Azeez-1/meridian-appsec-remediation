@@ -9,6 +9,7 @@ import logging
 from datetime import datetime
 from typing import Optional
 import sqlite3
+import json
 
 from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
@@ -42,6 +43,64 @@ def init_audit_db():
     conn.close()
 
 init_audit_db()
+def init_data_db():
+    conn = get_db_connection()
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS patients (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            dob TEXT NOT NULL,
+            nhs_number TEXT NOT NULL,
+            conditions TEXT NOT NULL,
+            gp TEXT NOT NULL,
+            clinic TEXT NOT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS appointments (
+            id TEXT PRIMARY KEY,
+            patient_id TEXT NOT NULL,
+            date TEXT NOT NULL,
+            type TEXT NOT NULL,
+            status TEXT NOT NULL,
+            notes TEXT,
+            created_at TEXT
+        )
+    """)
+
+    # Seed starting data only if the tables are empty, so edits made after
+    # the first run survive future restarts instead of being overwritten.
+    existing = conn.execute("SELECT COUNT(*) FROM patients").fetchone()[0]
+    if existing == 0:
+        conn.executemany(
+            "INSERT INTO patients (id, name, dob, nhs_number, conditions, gp, clinic) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [
+                ("P001", "James Thompson", "1978-03-15", "943 476 5461",
+                 json.dumps(["hypertension", "type-2-diabetes"]), "Dr. Sarah Chen", "Bristol"),
+                ("P002", "Amara Okafor", "1992-11-28", "412 833 1029",
+                 json.dumps(["asthma"]), "Dr. Marcus Williams", "Bath"),
+                ("P003", "Eleanor Davies", "1955-07-04", "728 194 3847",
+                 json.dumps(["atrial-fibrillation", "osteoporosis"]), "Dr. Sarah Chen", "Exeter"),
+            ]
+        )
+        conn.executemany(
+            "INSERT INTO appointments (id, patient_id, date, type, status, notes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [
+                ("A001", "P001", "2024-12-10", "follow-up", "scheduled", None, None),
+                ("A002", "P002", "2024-12-11", "annual-review", "scheduled", None, None),
+                ("A003", "P003", "2024-12-09", "urgent", "completed", None, None),
+            ]
+        )
+
+    conn.commit()
+    conn.close()
+
+init_data_db()
+
+def patient_row_to_dict(row):
+    patient = dict(row)
+    patient["conditions"] = json.loads(patient["conditions"])
+    return patient
 
 app = FastAPI(
     title="Meridian Health Services API",
@@ -63,43 +122,6 @@ app.add_middleware(
 
 DEBUG_PASSWORD = os.environ.get("DEBUG_PASSWORD", "")
 
-
-# ── In-memory data store (no database for simplicity) ─────────────────────────
-patients_db: dict = {
-    "P001": {
-        "id": "P001",
-        "name": "James Thompson",
-        "dob": "1978-03-15",
-        "nhs_number": "943 476 5461",
-        "conditions": ["hypertension", "type-2-diabetes"],
-        "gp": "Dr. Sarah Chen",
-        "clinic": "Bristol"
-    },
-    "P002": {
-        "id": "P002",
-        "name": "Amara Okafor",
-        "dob": "1992-11-28",
-        "nhs_number": "412 833 1029",
-        "conditions": ["asthma"],
-        "gp": "Dr. Marcus Williams",
-        "clinic": "Bath"
-    },
-    "P003": {
-        "id": "P003",
-        "name": "Eleanor Davies",
-        "dob": "1955-07-04",
-        "nhs_number": "728 194 3847",
-        "conditions": ["atrial-fibrillation", "osteoporosis"],
-        "gp": "Dr. Sarah Chen",
-        "clinic": "Exeter"
-    }
-}
-
-appointments_db: list = [
-    {"id": "A001", "patient_id": "P001", "date": "2024-12-10", "type": "follow-up", "status": "scheduled"},
-    {"id": "A002", "patient_id": "P002", "date": "2024-12-11", "type": "annual-review", "status": "scheduled"},
-    {"id": "A003", "patient_id": "P003", "date": "2024-12-09", "type": "urgent", "status": "completed"},
-]
 
 # ── Models ────────────────────────────────────────────────────────────────────
 class AppointmentCreate(BaseModel):
@@ -128,70 +150,110 @@ def get_api_key(x_api_key: str = Header(default=None)):
 # ── Health check ──────────────────────────────────────────────────────────────
 @app.get("/health")
 def health_check():
+    conn = get_db_connection()
+    patient_count = conn.execute("SELECT COUNT(*) FROM patients").fetchone()[0]
+    conn.close()
     return {
         "status": "ok",
         "service": "meridian-health",
         "version": "2.1.4",
         "timestamp": datetime.utcnow().isoformat(),
-        "patients_registered": len(patients_db)
+        "patients_registered": patient_count
     }
 
 # ── Patient endpoints ─────────────────────────────────────────────────────────
 @app.get("/api/patients")
 def list_patients(api_key: str = Depends(get_api_key)):
     """List all registered patients. Requires API key."""
-    return {"patients": list(patients_db.values()), "total": len(patients_db)}
+    conn = get_db_connection()
+    rows = conn.execute("SELECT * FROM patients").fetchall()
+    conn.close()
+    patients = [patient_row_to_dict(row) for row in rows]
+    return {"patients": patients, "total": len(patients)}
 
 @app.get("/api/patients/{patient_id}")
 def get_patient(patient_id: str, api_key: str = Depends(get_api_key)):
     """Get a specific patient by ID."""
-    patient = patients_db.get(patient_id)
-    if not patient:
+    conn = get_db_connection()
+    row = conn.execute("SELECT * FROM patients WHERE id = ?", (patient_id,)).fetchone()
+    conn.close()
+    if not row:
         raise HTTPException(status_code=404, detail=f"Patient {patient_id} not found")
-    return patient
+    return patient_row_to_dict(row)
 
 @app.patch("/api/patients/{patient_id}")
 def update_patient(patient_id: str, update: PatientUpdate, api_key: str = Depends(get_api_key)):
     """Update patient details."""
-    patient = patients_db.get(patient_id)
-    if not patient:
+    conn = get_db_connection()
+    row = conn.execute("SELECT * FROM patients WHERE id = ?", (patient_id,)).fetchone()
+    if not row:
+        conn.close()
         raise HTTPException(status_code=404, detail=f"Patient {patient_id} not found")
+
+    patient = patient_row_to_dict(row)
     if update.name:       patient["name"]       = update.name
     if update.conditions: patient["conditions"]  = update.conditions
     if update.gp:         patient["gp"]          = update.gp
-    patients_db[patient_id] = patient
+
+    conn.execute(
+        "UPDATE patients SET name = ?, conditions = ?, gp = ? WHERE id = ?",
+        (patient["name"], json.dumps(patient["conditions"]), patient["gp"], patient_id)
+    )
+    conn.commit()
+    conn.close()
     logger.info(f"Patient {patient_id} updated")
     return patient
 
 # ── Appointment endpoints ─────────────────────────────────────────────────────
 @app.get("/api/appointments")
 def list_appointments(api_key: str = Depends(get_api_key)):
-    return {"appointments": appointments_db, "total": len(appointments_db)}
+    conn = get_db_connection()
+    rows = conn.execute("SELECT * FROM appointments").fetchall()
+    conn.close()
+    appointments = [dict(row) for row in rows]
+    return {"appointments": appointments, "total": len(appointments)}
 
 @app.post("/api/appointments")
 def create_appointment(appt: AppointmentCreate, api_key: str = Depends(get_api_key)):
-    if appt.patient_id not in patients_db:
+    conn = get_db_connection()
+    patient = conn.execute("SELECT id FROM patients WHERE id = ?", (appt.patient_id,)).fetchone()
+    if not patient:
+        conn.close()
         raise HTTPException(status_code=404, detail=f"Patient {appt.patient_id} not found")
-    new_appt = {
-        "id": f"A{len(appointments_db) + 1:03d}",
+
+    count = conn.execute("SELECT COUNT(*) FROM appointments").fetchone()[0]
+    new_id = f"A{count + 1:03d}"
+    created_at = datetime.utcnow().isoformat()
+
+    conn.execute(
+        "INSERT INTO appointments (id, patient_id, date, type, status, notes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (new_id, appt.patient_id, appt.date, appt.appointment_type, "scheduled", appt.notes, created_at)
+    )
+    conn.commit()
+    conn.close()
+
+    logger.info(f"Appointment created for patient {appt.patient_id}")
+    return {
+        "id": new_id,
         "patient_id": appt.patient_id,
         "date": appt.date,
         "type": appt.appointment_type,
         "status": "scheduled",
         "notes": appt.notes,
-        "created_at": datetime.utcnow().isoformat()
+        "created_at": created_at
     }
-    appointments_db.append(new_appt)
-    logger.info(f"Appointment created for patient {appt.patient_id}")
-    return new_appt
 
 # ── Record export ──────────────────────────────────────────────────────────────
 @app.get("/api/records/{patient_id}/export")
 def export_patient_records(patient_id: str, api_key: str = Depends(get_api_key)):
     """Export a patient's record as a hashed snapshot."""
-    patient = patients_db.get(patient_id)
-    if not patient:
+    conn = get_db_connection()
+    row = conn.execute("SELECT * FROM patients WHERE id = ?", (patient_id,)).fetchone()
+    conn.close()
+    if not row:
         raise HTTPException(status_code=404, detail=f"Patient {patient_id} not found")
+
+    patient = patient_row_to_dict(row)
 
     try:
         record_hash = hashlib.sha256(str(patient).encode()).hexdigest()
@@ -240,8 +302,11 @@ def get_audit_log(api_key: str = Depends(get_api_key)):
 @app.get("/api/clinics/summary")
 def clinic_summary(api_key: str = Depends(get_api_key)):
     """Summary of patients per clinic."""
+    conn = get_db_connection()
+    rows = conn.execute("SELECT clinic FROM patients").fetchall()
+    conn.close()
     clinics: dict = {}
-    for patient in patients_db.values():
-        clinic = patient.get("clinic", "Unknown")
+    for row in rows:
+        clinic = row["clinic"] or "Unknown"
         clinics[clinic] = clinics.get(clinic, 0) + 1
-    return {"clinics": clinics, "total_patients": len(patients_db)}
+    return {"clinics": clinics, "total_patients": len(rows)}
