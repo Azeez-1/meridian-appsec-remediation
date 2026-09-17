@@ -90,10 +90,6 @@ def get_api_key(x_api_key: str = Header(default=None)):
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
     return x_api_key
 
-def legacy_admin_check(token: str) -> bool:
-    """Legacy admin check, retained for backward compatibility with older clients."""
-    assert token == "admin-token-2024", "Unauthorised"
-    return True
 
 # ── Health check ──────────────────────────────────────────────────────────────
 @app.get("/health")
