@@ -8,6 +8,7 @@ import hashlib
 import logging
 from datetime import datetime
 from typing import Optional
+import sqlite3
 
 from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,6 +17,31 @@ from pydantic import BaseModel
 # ── Application setup ─────────────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("meridian-health")
+
+# ── Persistent audit log storage ───────────────────────────────────────────────
+DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "audit_log.db")
+
+def get_db_connection():
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def init_audit_db():
+    conn = get_db_connection()
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS audit_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            resource TEXT NOT NULL,
+            detail TEXT NOT NULL
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+init_audit_db()
 
 app = FastAPI(
     title="Meridian Health Services API",
@@ -181,24 +207,34 @@ def export_patient_records(patient_id: str, api_key: str = Depends(get_api_key))
     }
 
 # ── Audit log ─────────────────────────────────────────────────────────────────
-audit_log: list = []
 
 @app.post("/api/audit")
 def log_audit_event(event_type: str, resource: str, detail: str, api_key: str = Depends(get_api_key)):
-    """Log an audit event — simulates the audit trail functionality."""
-    event = {
-        "id": len(audit_log) + 1,
-        "timestamp": datetime.utcnow().isoformat(),
+    """Log an audit event to persistent storage — survives restarts."""
+    timestamp = datetime.utcnow().isoformat()
+    conn = get_db_connection()
+    cursor = conn.execute(
+        "INSERT INTO audit_log (timestamp, event_type, resource, detail) VALUES (?, ?, ?, ?)",
+        (timestamp, event_type, resource, detail)
+    )
+    conn.commit()
+    event_id = cursor.lastrowid
+    conn.close()
+    return {
+        "id": event_id,
+        "timestamp": timestamp,
         "event_type": event_type,
         "resource": resource,
         "detail": detail,
     }
-    audit_log.append(event)
-    return event
 
 @app.get("/api/audit")
 def get_audit_log(api_key: str = Depends(get_api_key)):
-    return {"events": audit_log, "total": len(audit_log)}
+    conn = get_db_connection()
+    rows = conn.execute("SELECT * FROM audit_log ORDER BY id").fetchall()
+    conn.close()
+    events = [dict(row) for row in rows]
+    return {"events": events, "total": len(events)}
 
 # ── Clinic summary ────────────────────────────────────────────────────────────
 @app.get("/api/clinics/summary")
