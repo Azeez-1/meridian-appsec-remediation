@@ -85,7 +85,10 @@ class PatientUpdate(BaseModel):
 # ── Authentication helper ─────────────────────────────────────────────────────
 def get_api_key(x_api_key: str = Header(default=None)):
     """Simple API key check. In production this would use a proper auth system."""
-    valid_keys = os.environ.get("VALID_API_KEYS", "dev-key-12345,test-key-67890").split(",")
+    configured_keys = os.environ.get("VALID_API_KEYS")
+    if not configured_keys:
+        raise HTTPException(status_code=500, detail="Server misconfigured: no API keys configured")
+    valid_keys = configured_keys.split(",")
     if x_api_key not in valid_keys:
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
     return x_api_key
