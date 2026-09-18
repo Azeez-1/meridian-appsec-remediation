@@ -58,7 +58,7 @@ jobs:
       - name: Install Bandit
         run: pip install bandit
 
-            - name: Run Bandit SAST (blocking - HIGH severity)
+      - name: Run Bandit SAST (blocking - HIGH severity)
         run: python -m bandit -r app/ -lll -ii -f txt
 
       - name: Run Bandit SAST (informational - MEDIUM severity)
