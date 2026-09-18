@@ -16,7 +16,7 @@ jobs:
         with:
           fetch-depth: 0
 
-            - name: Determine scan mode
+      - name: Determine scan mode
         id: scan-mode
         run: |
           if [ "${{ github.event.before }}" = "0000000000000000000000000000000000000000" ]; then
